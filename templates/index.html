@@ -563,6 +563,10 @@
 
           <div class="panel hidden" id="tab-advanced">
             <div class="set-row">
+              <div class="lbl"><b>Auto-save .txt after every recording</b><span>Writes the plain-text transcript to Documents automatically, no click needed. Save .srt / audio / cleaned text stay manual.</span></div>
+              <label class="switch"><input type="checkbox" id="setAutoSaveTxt" checked><span class="track"></span></label>
+            </div>
+            <div class="set-row">
               <div class="lbl"><b>Keep meeting audio in History</b><span>Lets you save audio later, and play it back from History</span></div>
               <label class="switch"><input type="checkbox" id="setSaveAudio" checked><span class="track"></span></label>
             </div>
@@ -787,6 +791,7 @@ async function loadSettingsUI(){
     const d = await (await fetch('/settings')).json();
     if(!d.ok) return;
     currentSettings = d.settings;
+    $('setAutoSaveTxt').checked = currentSettings.auto_save_txt !== false;
     $('setSaveAudio').checked = !!currentSettings.save_audio;
     $('setAutoClean').checked = !!currentSettings.auto_ai_clean;
     $('setPushToTalk').checked = !!currentSettings.push_to_talk;
@@ -818,6 +823,7 @@ $('settingsSave').onclick = async () => {
   const hk = toHotkeyTag($('hotkeyInput').value);
   const cancelHk = toHotkeyTag($('cancelHotkeyInput').value);
   const patch = {
+    auto_save_txt: $('setAutoSaveTxt').checked,
     save_audio: $('setSaveAudio').checked,
     auto_ai_clean: $('setAutoClean').checked,
     push_to_talk: $('setPushToTalk').checked,
@@ -850,11 +856,14 @@ $('openDocuments').onclick = () => fetch('/open-folder/documents', {method:'POST
 function showSaved(d){
   const box=$('saved'); box.style.display='block';
   const id = d.session_id;
+  const subtitle = d.auto_saved_txt
+    ? `<svg class="ico" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg> .txt auto-saved to <span title="${d.folder||''}">Documents\\Meet Transcriber</span>`
+    : 'Kept in History. Nothing is written to disk until you choose to save it below.';
   box.innerHTML=`
     <h3><svg class="ico" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg> Recording finished &middot; ${d.count} line${d.count===1?'':'s'}</h3>
-    <p class="folder">Kept in History. Nothing is written to disk until you choose to save it below.</p>
+    <p class="folder auto-clean-note">${subtitle}</p>
     <div class="files">
-      <a href="/session/${id}/export/txt" download>${'<svg class="ico" viewBox="0 0 24 24">'+fileIcon('txt')+'</svg>'} Save .txt</a>
+      <a href="/session/${id}/export/txt" download>${'<svg class="ico" viewBox="0 0 24 24">'+fileIcon('txt')+'</svg>'} ${d.auto_saved_txt ? 'Re-download .txt' : 'Save .txt'}</a>
       <a href="/session/${id}/export/srt" download>${'<svg class="ico" viewBox="0 0 24 24">'+fileIcon('srt')+'</svg>'} Save .srt</a>
       ${d.has_audio ? `<a href="/session/${id}/export/audio" download>${'<svg class="ico" viewBox="0 0 24 24">'+fileIcon('wav')+'</svg>'} Save audio</a>` : ''}
       ${!d.clean ? `<button id="cleanBtn">${'<svg class="ico" viewBox="0 0 24 24">'+fileIcon('clean')+'</svg>'} Clean up with local AI</button>`

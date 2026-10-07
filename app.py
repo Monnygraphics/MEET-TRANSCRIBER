@@ -139,6 +139,7 @@ DEFAULT_SETTINGS = {
     "default_model": "small",
     "default_language": "en",
     "history_limit": 20,       # how many past sessions to keep in the History list
+    "auto_save_txt": True,     # write the .txt export to Documents automatically after every recording
 }
 _settings_lock = threading.Lock()
 
@@ -495,12 +496,25 @@ class SessionMixin:
             clean_engine=clean_engine,
         )
 
+        # Auto-save the .txt export so every finished recording leaves a real
+        # file in Documents without requiring a manual click -- the one kind
+        # that's always on by default; srt/audio/clean stay explicit-only.
+        auto_saved_txt = False
+        if load_settings().get("auto_save_txt", True):
+            try:
+                _export_session_file(self.session_id, "txt", t=None, entries=None)
+                auto_saved_txt = True
+            except Exception:
+                pass
+
         self._set_status("stopped", {
             "session_id": self.session_id,
             "count": len(self.lines),
             "has_audio": bool(entry.get("has_audio")),
             "clean": bool(clean_text),
             "clean_engine": clean_engine,
+            "auto_saved_txt": auto_saved_txt,
+            "folder": output_dir() if auto_saved_txt else None,
         })
 
     def stop(self, discard=False):
@@ -885,19 +899,19 @@ def session_audio(session_id):
     return send_file(path)
 
 
-@app.route("/session/<session_id>/export/<kind>")
-def session_export(session_id, kind):
-    """Save exactly one file (txt|srt|audio|clean) for this session into
-    Documents\\Meet Transcriber -- the explicit, one-kind-at-a-time replacement
-    for the old always-bundle-everything behavior."""
-    if kind not in ("txt", "srt", "audio", "clean"):
-        return "Unknown export kind", 400
-    try:
-        t = _load_transcript(session_id)
-    except Exception:
-        return "Not found", 404
+def _export_session_file(session_id, kind, t=None, entries=None):
+    """Write exactly one export kind (txt|srt|audio|clean) for a session into
+    Documents\\Meet Transcriber, update the index's `exported` record, and
+    return the file path. Shared by the /export route and the auto-save-txt
+    step in _finalize() -- one place that actually writes these files.
 
-    entries = _load_index()
+    Raises FileNotFoundError if audio was requested but none was captured,
+    RuntimeError (propagated from clean_transcript) if "clean" has no local
+    AI engine available, or any other Exception on a genuine write failure."""
+    if t is None:
+        t = _load_transcript(session_id)
+    if entries is None:
+        entries = _load_index()
     entry = next((e for e in entries if e["session_id"] == session_id), None)
 
     # Re-serve a prior export of this exact kind instead of re-writing it.
@@ -905,7 +919,7 @@ def session_export(session_id, kind):
     if existing:
         path = os.path.join(output_dir(), existing)
         if os.path.isfile(path):
-            return send_file(path, as_attachment=True)
+            return path
 
     prefix = t.get("file_prefix") or "meet_transcript"
     dpath = output_dir()
@@ -930,22 +944,15 @@ def session_export(session_id, kind):
     elif kind == "audio":
         src = os.path.join(_sessions_root(), session_id, "audio.wav")
         if not os.path.isfile(src):
-            return "No audio for this session", 404
+            raise FileNotFoundError("no audio for this session")
         fname = f"{prefix}_{session_id}.wav"
         path = os.path.join(dpath, fname)
         shutil.copyfile(src, path)
 
-    else:  # clean
+    elif kind == "clean":
         clean_text, clean_engine = t.get("clean_text"), t.get("clean_engine")
         if not clean_text:
-            try:
-                clean_text, clean_engine = clean_transcript(t["lines"])
-            except RuntimeError:
-                return jsonify({"ok": False, "error": "ollama_not_running",
-                                "help": "Install Ollama from ollama.com, then run: "
-                                        "ollama pull llama3.2"}), 503
-            except Exception as e:
-                return jsonify({"ok": False, "error": str(e)}), 500
+            clean_text, clean_engine = clean_transcript(t["lines"])  # may raise RuntimeError
             t["clean_text"], t["clean_engine"] = clean_text, clean_engine
             _write_transcript(session_id, t)
             if entry is not None:
@@ -955,9 +962,36 @@ def session_export(session_id, kind):
         with open(path, "w", encoding="utf-8") as f:
             f.write(clean_text)
 
+    else:
+        raise ValueError(f"unknown export kind: {kind}")
+
     if entry is not None:
         entry.setdefault("exported", {})[kind] = os.path.basename(path)
         _save_index(entries)
+    return path
+
+
+@app.route("/session/<session_id>/export/<kind>")
+def session_export(session_id, kind):
+    """Save exactly one file (txt|srt|audio|clean) for this session into
+    Documents\\Meet Transcriber -- the explicit, one-kind-at-a-time replacement
+    for the old always-bundle-everything behavior."""
+    if kind not in ("txt", "srt", "audio", "clean"):
+        return "Unknown export kind", 400
+    try:
+        t = _load_transcript(session_id)
+    except Exception:
+        return "Not found", 404
+    try:
+        path = _export_session_file(session_id, kind, t=t)
+    except FileNotFoundError:
+        return "No audio for this session", 404
+    except RuntimeError:
+        return jsonify({"ok": False, "error": "ollama_not_running",
+                        "help": "Install Ollama from ollama.com, then run: "
+                                "ollama pull llama3.2"}), 503
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
     return send_file(path, as_attachment=True)
 
 
