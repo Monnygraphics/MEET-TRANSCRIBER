@@ -86,16 +86,37 @@ def model_location(name):
     return local if os.path.isdir(local) else name
 
 
+def _real_documents_dir():
+    """Resolve the user's actual Documents folder, respecting Windows folder
+    redirection (e.g. Documents moved to another drive) -- os.path.expanduser
+    alone ignores that and can silently write to a path Explorer doesn't
+    actually show as "Documents" (this user's really lives on D:\\)."""
+    try:
+        import winreg
+        with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders") as key:
+            value, kind = winreg.QueryValueEx(key, "Personal")
+            if kind == winreg.REG_EXPAND_SZ:
+                value = winreg.ExpandEnvironmentStrings(value)
+            if value and os.path.isdir(value):
+                return value
+    except Exception:
+        pass
+    return os.path.join(os.path.expanduser("~"), "Documents")
+
+
 def output_dir():
-    """Save transcripts to the LOCAL Documents folder (C:\\Users\\<you>\\Documents),
-    not the OneDrive-synced one. A 'Meet Transcriber' subfolder is created."""
-    home = os.path.expanduser("~")
-    d = os.path.join(home, "Documents", "Meet Transcriber")
+    """Save transcripts to the user's real Documents folder (not the OneDrive-
+    synced one, and not just C:\\Users\\<you>\\Documents -- that can differ from
+    the real, possibly-redirected Documents folder). A 'Meet Transcriber'
+    subfolder is created there, consistently, every time."""
+    d = os.path.join(_real_documents_dir(), "Meet Transcriber")
     try:
         os.makedirs(d, exist_ok=True)
         return d
     except Exception:
-        fallback = os.path.join(home, "Meet Transcriber")
+        fallback = os.path.join(os.path.expanduser("~"), "Meet Transcriber")
         os.makedirs(fallback, exist_ok=True)
         return fallback
 
