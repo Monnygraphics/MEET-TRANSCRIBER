@@ -1,0 +1,11 @@
+faster-whisper
+PyAudioWPatch
+webrtcvad-wheels
+numpy
+flask
+soxr
+noisereduce
+pywebview
+pillow
+pystray
+pynput

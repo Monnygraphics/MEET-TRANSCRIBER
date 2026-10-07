@@ -1,0 +1,19 @@
+# Build artifacts (regenerate with PyInstaller / Inno Setup)
+build/
+dist/
+Output/
+*.zip
+
+# Bundled speech models (large; fetch with build_tools/download_models.py)
+models/
+
+# Python
+__pycache__/
+*.pyc
+
+# Test / runtime outputs
+transcript_*.txt
+*.srt
+smoke_test.log
+build_tools/icon_preview.png
+build_tools/exe_icon_check.png
