@@ -207,28 +207,56 @@ class AudioCapture:
         threading.Thread(target=self._mix_loop, daemon=True).start()
 
     def _mix_loop(self):
-        """Pull from both queues, resample to 16k mono, sum, emit fixed frames."""
+        """Pull from both queues, resample to 16k mono, sum, emit fixed frames.
+
+        Either source can legitimately go quiet while the other keeps producing
+        (a Bluetooth sink suspending itself when idle, a mic losing its device).
+        Waiting on one queue before ever draining the other used to mean a dead
+        source silently blocked the live one too -- track each source's last
+        delivery and fall back to the live one alone once the other stalls.
+        """
         loop_buf = np.zeros(0, dtype=np.float32)
         mic_buf = np.zeros(0, dtype=np.float32)
         carry = np.zeros(0, dtype=np.float32)
+        last_loop = last_mic = time.time()
+        STALL_S = 1.0
         while not self._stop.is_set():
-            try:
-                lb = self._loop_q.get(timeout=0.5)
-            except queue.Empty:
-                continue
-            loop_buf = np.concatenate(
-                [loop_buf, to_mono_16k(lb, *self._loop_fmt)])
+            drained = False
+            while not self._loop_q.empty():
+                loop_buf = np.concatenate(
+                    [loop_buf, to_mono_16k(self._loop_q.get(), *self._loop_fmt)])
+                last_loop = time.time()
+                drained = True
             if self.use_mic:
                 while not self._mic_q.empty():
                     mic_buf = np.concatenate(
                         [mic_buf, to_mono_16k(self._mic_q.get(), *self._mic_fmt)])
-                n = min(len(loop_buf), len(mic_buf))
-                if n == 0:
-                    continue
-                # Weighted sum keeps both voices audible without instant clipping
-                # when the remote speaker and you talk at the same time.
-                mixed = loop_buf[:n] * 0.85 + mic_buf[:n] * 0.85
-                loop_buf, mic_buf = loop_buf[n:], mic_buf[n:]
+                    last_mic = time.time()
+                    drained = True
+            if not drained:
+                time.sleep(0.02)
+                continue
+
+            if self.use_mic:
+                now = time.time()
+                loop_stalled = (now - last_loop) > STALL_S and len(mic_buf) > 0
+                mic_stalled = (now - last_mic) > STALL_S and len(loop_buf) > 0
+                if loop_stalled:
+                    mixed = mic_buf * 0.85
+                    mic_buf = np.zeros(0, dtype=np.float32)
+                    loop_buf = np.zeros(0, dtype=np.float32)
+                elif mic_stalled:
+                    mixed = loop_buf * 0.85
+                    loop_buf = np.zeros(0, dtype=np.float32)
+                    mic_buf = np.zeros(0, dtype=np.float32)
+                else:
+                    n = min(len(loop_buf), len(mic_buf))
+                    if n == 0:
+                        continue
+                    # Weighted sum keeps both voices audible without instant
+                    # clipping when the remote speaker and you talk at once.
+                    mixed = loop_buf[:n] * 0.85 + mic_buf[:n] * 0.85
+                    loop_buf, mic_buf = loop_buf[n:], mic_buf[n:]
             else:
                 mixed = loop_buf
                 loop_buf = np.zeros(0, dtype=np.float32)

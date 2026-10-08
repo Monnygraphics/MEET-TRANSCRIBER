@@ -770,15 +770,6 @@ def index():
     return send_file(resource_path(os.path.join("templates", "index.html")))
 
 
-@app.route("/hud")
-def hud():
-    """Compact floating recording pill shown in its own always-on-top window."""
-    path = resource_path(os.path.join("templates", "hud.html"))
-    with open(path, "r", encoding="utf-8") as f:
-        html = f.read().replace("__PORT__", str(PORT))
-    return Response(html, mimetype="text/html")
-
-
 @app.route("/devices")
 def devices():
     """List system-audio (loopback) sources + microphones so the user can pick."""
@@ -852,10 +843,16 @@ def start():
 
 @app.route("/status")
 def status():
-    """Lightweight polling endpoint for the tray icon / HUD window."""
+    """Lightweight polling endpoint for the tray icon and the main window --
+    includes elapsed seconds so a window opened after recording already
+    started (e.g. via the global hotkey) can show an accurate timer."""
     s, active = current_status()
+    elapsed = None
+    if session is not None and getattr(session, "rec_start", None) is not None:
+        elapsed = time.monotonic() - session.rec_start
     return jsonify({"ok": True, "status": s, "active": active,
-                    "count": len(session.lines) if session else 0})
+                    "count": len(session.lines) if session else 0,
+                    "elapsed": elapsed})
 
 
 @app.route("/history")
@@ -1290,9 +1287,11 @@ def main():
             time.sleep(3600)
 
     # Default: open as a standalone native desktop app window (no browser),
-    # plus a system tray icon, a compact floating recording HUD, and a
-    # global hotkey (Ctrl+Alt+R) — so the app can run in the background
-    # like a proper desktop utility instead of demanding the window stay open.
+    # plus a system tray icon and a global hotkey (Ctrl+Alt+R) -- so the app
+    # can run in the background like a proper desktop utility instead of
+    # demanding the window stay open. Recording status/timer live in this
+    # one window (it syncs itself to any already-running session on load),
+    # not in a second floating overlay.
     # --start-hidden (set by autostart.py's registered launch command) skips
     # showing the main window at all -- tray + hotkey still start normally,
     # since desktop.start() below wires those up unconditionally either way.
@@ -1305,24 +1304,11 @@ def main():
             background_color="#0B0F1A", hidden=start_hidden)
 
         def _on_started():
-            # Create the HUD window here (after the GUI loop is running)
-            # rather than before webview.start(): pywebview's startup path
-            # waits for the FIRST window's "shown" event before creating any
-            # windows that were pre-registered, and doing that with a second
-            # hidden/frameless/on_top window can make that wait fail. Windows
-            # created from within this callback are added dynamically and
-            # skip that gate entirely.
             try:
                 import desktop
-                hud_win = webview.create_window(
-                    "Meet Transcriber", f"{url}/hud",
-                    width=340, height=104, x=60, y=60,
-                    frameless=True, easy_drag=False, on_top=True,
-                    resizable=False, hidden=True, transparent=True,
-                    js_api=desktop.HudApi())
-                desktop.start(main_win, hud_win, start_hidden=start_hidden)
+                desktop.start(main_win, start_hidden=start_hidden)
             except Exception as e:
-                print("Desktop shell (tray/hotkey/HUD) unavailable:", e)
+                print("Desktop shell (tray/hotkey) unavailable:", e)
 
         webview.start(func=_on_started)   # blocks until the app really quits
     except Exception as e:

@@ -622,7 +622,7 @@ $('menuToggle').onclick = () => $('sidebar').classList.toggle('show');
 
 function setBusy(on){ $('spin').style.display = on ? 'inline-block':'none'; $('dot').style.display = on ? 'none':'inline-block'; }
 function fmtElapsed(ms){ const s=Math.floor(ms/1000); return `${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`; }
-function startTimer(){ t0=Date.now(); timerInt=setInterval(()=>{ $('timer').textContent=fmtElapsed(Date.now()-t0); },500); }
+function startTimer(elapsedMs){ t0=Date.now()-(elapsedMs||0); if(timerInt) return; timerInt=setInterval(()=>{ $('timer').textContent=fmtElapsed(Date.now()-t0); },500); }
 function stopTimer(){ clearInterval(timerInt); timerInt=null; }
 function setStatus(s,state){ $('status').textContent=s; $('dot').classList.toggle('live',state==='live'); $('dot').classList.toggle('busy',state==='busy'); setBusy(state==='busy'); }
 
@@ -969,6 +969,23 @@ $('fileInput').onchange=async()=>{
   }catch(e){ setStatus('upload error','idle'); finished(); }
   $('fileInput').value='';
 };
+
+/* ---- attach to a session already running (e.g. started via the global
+   hotkey while this window was closed or hidden) so opening/showing the
+   window always reflects reality instead of assuming idle. ---- */
+(async function attachIfActive(){
+  try{
+    const r = await fetch('/status'); const d = await r.json();
+    if(d.active){
+      running();
+      const live = d.status==='listening';
+      setStatus(d.status, live?'live':'busy');
+      showRecording(true, d.status);
+      startTimer((d.elapsed||0)*1000);
+      connect();
+    }
+  }catch(e){}
+})();
 </script>
 </body>
 </html>

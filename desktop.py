@@ -1,11 +1,9 @@
 """
-Desktop shell for Local Meet Transcriber: system tray icon, a global hotkey
-to start/stop recording from anywhere, and a small floating "HUD" window
-that shows recording status without needing the full app window open.
-
-This mirrors the "background-first" UX of tools like Handy (cjpais/handy):
-the app can live in the tray, be triggered by a hotkey, and show only a
-compact overlay while recording — the full window is optional.
+Desktop shell for Local Meet Transcriber: system tray icon and a global
+hotkey to start/stop recording from anywhere. The main window shows its own
+recording status/timer (syncing itself to any session already running when
+it's opened), so there's just the one window -- the tray icon's color and
+the stop notification are the only feedback while it's hidden.
 """
 
 import os
@@ -47,32 +45,20 @@ _ICON_IDLE = _tray_image(False)
 _ICON_REC = _tray_image(True)
 
 
-# --------------------------------------------------------------- js api ----
+# --------------------------------------------------------------- state -----
 class State:
     main_win = None
-    hud_win = None
     tray_icon = None
     quitting = False
     # pywebview's hide()/show() don't update a queryable "is visible" flag on
     # every backend, so we track it ourselves through our own wrappers below.
     main_visible = True
-    hud_visible = False
 
 
-# Shared across the whole process: created once at import time so the HUD
-# window's js_api (bound before desktop.start() runs) and the tray/hotkey
-# logic (wired up inside desktop.start()) always refer to the same object.
+# Shared across the whole process: created once at import time so the
+# tray/hotkey logic (wired up inside desktop.start()) always refers to the
+# same object.
 state = State()
-
-
-class HudApi:
-    """Exposed to the HUD window's JS as window.pywebview.api.*"""
-
-    def show_main(self):
-        _show_main()
-
-    def hide_hud(self):
-        _hide_hud()
 
 
 # ------------------------------------------------------------- actions -----
@@ -103,33 +89,12 @@ def _toggle_record():
         appmod.stop_current_session()
     else:
         appmod.start_live_session()   # sensible defaults: small/auto/mic+denoise on
-        _show_hud()
-
-
-def _show_hud():
-    try:
-        state.hud_win.show()
-        state.hud_visible = True
-    except Exception:
-        pass
-
-
-def _hide_hud():
-    try:
-        state.hud_win.hide()
-        state.hud_visible = False
-    except Exception:
-        pass
 
 
 def _quit():
     state.quitting = True
     try:
         state.tray_icon.stop()
-    except Exception:
-        pass
-    try:
-        state.hud_win.destroy()
     except Exception:
         pass
     try:
@@ -188,28 +153,18 @@ def _notify_stopped(sess):
 
 
 def _watch_status():
-    """Poll session state to: swap the tray icon, auto-show/hide the HUD,
-    and keep the tray menu labels fresh."""
+    """Poll session state to swap the tray icon and fire the stop
+    notification -- the only feedback while the main window is hidden."""
     last_active = False
-    idle_since = None
     while not state.quitting:
         try:
             _, active = appmod.current_status()
             if active != last_active:
                 if state.tray_icon:
                     state.tray_icon.icon = _ICON_REC if active else _ICON_IDLE
-                if active:
-                    _show_hud()
-                    idle_since = None
-                else:
-                    idle_since = time.time()
+                if not active:
                     _notify_stopped(appmod.session)
                 last_active = active
-            # Auto-hide the HUD a couple seconds after a session finishes
-            # (gives the user a moment to see the final status).
-            if not active and idle_since and time.time() - idle_since > 2.5:
-                _hide_hud()
-                idle_since = None
         except Exception:
             pass
         time.sleep(1.0)
@@ -281,7 +236,6 @@ def _on_key_press(key):
             _, active = appmod.current_status()
             if not active:
                 appmod.start_live_session()
-                _show_hud()
         else:
             _toggle_record()
     if _cancel_combo and _cancel_combo.issubset(_pressed) and not _cancel_edge:
@@ -289,7 +243,6 @@ def _on_key_press(key):
         _, active = appmod.current_status()
         if active:
             appmod.cancel_current_session()
-            _hide_hud()
 
 
 def _on_key_release(key):
@@ -343,11 +296,10 @@ def apply_hotkey(combo, cancel_combo=None, ptt=None):
 
 
 # --------------------------------------------------------------- setup -----
-def start(main_win, hud_win, start_hidden=False):
-    """Called once pywebview's event loop is running. Wires up the tray,
-    hotkey, and HUD auto-show/hide. Never blocks."""
+def start(main_win, start_hidden=False):
+    """Called once pywebview's event loop is running. Wires up the tray and
+    global hotkey. Never blocks."""
     state.main_win = main_win
-    state.hud_win = hud_win
     state.main_visible = not start_hidden
     settings = appmod.load_settings()
 
@@ -357,13 +309,6 @@ def start(main_win, hud_win, start_hidden=False):
         _hide_main()
         return False
     main_win.events.closing += on_main_closing
-
-    def on_hud_closing():
-        if state.quitting:
-            return True
-        _hide_hud()
-        return False
-    hud_win.events.closing += on_hud_closing
 
     icon = _build_tray()
     threading.Thread(target=icon.run, daemon=True).start()
