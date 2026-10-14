@@ -398,6 +398,18 @@ def save_session_cache(session_id, lines, kind, file_prefix, model_name, languag
     return entry
 
 
+def _notify_tray(msg):
+    """Best-effort tray balloon so a mid-recording warning (e.g. the other
+    person's audio has gone silent) reaches the user even with the main
+    window hidden -- not just the in-window notice banner."""
+    try:
+        import desktop
+        if desktop.state.tray_icon is not None:
+            desktop.state.tray_icon.notify(msg, "Local Meet Transcriber")
+    except Exception:
+        pass
+
+
 class SessionMixin:
     """Shared event fan-out + transcript finalisation for live & file modes."""
 
@@ -581,6 +593,9 @@ class Session(SessionMixin):
             last_speech = 0.0
             peak = 0.0                       # loudest sample seen (no-audio check)
             warned = False
+            sys_audio_warned = False
+            mic_warned = False
+            ONE_SIDED_DEAD_S = 8.0            # sustained, not a brief stall
 
             while not self._stop.is_set():
                 try:
@@ -599,6 +614,36 @@ class Session(SessionMixin):
                                 "below, or check that the meeting plays through "
                                 "it (Bluetooth headsets often go silent in calls)."})
                     warned = True
+
+                # The check above only catches *total* silence. With a mic in
+                # the mix, the overall signal can look perfectly healthy (your
+                # own voice) while the system-audio side has been dead the
+                # whole time -- the mixer falls back to mic-only so the
+                # recording never blocks, but that fallback is otherwise
+                # silent about it. Watch each source's own last-delivery time
+                # so a one-sided recording gets flagged while it's still
+                # happening, not discovered after the fact in the transcript.
+                if self.use_mic and self.cap is not None:
+                    loop_age = time.time() - getattr(self.cap, "last_loop_ts", time.time())
+                    mic_age = time.time() - getattr(self.cap, "last_mic_ts", time.time())
+                    if not sys_audio_warned and now > ONE_SIDED_DEAD_S + 1 and loop_age > ONE_SIDED_DEAD_S:
+                        msg = ("System audio hasn't been picked up for a while -- "
+                               "only your microphone is being recorded. The other "
+                               "person's voice may be missing from this transcript. "
+                               "Check your audio output device (Bluetooth headsets "
+                               "often go silent mid-call) or pick a different "
+                               "source below.")
+                        self._emit({"type": "notice", "msg": msg})
+                        _notify_tray(msg)
+                        sys_audio_warned = True
+                    if not mic_warned and now > ONE_SIDED_DEAD_S + 1 and mic_age > ONE_SIDED_DEAD_S:
+                        msg = ("Your microphone hasn't been picked up for a while -- "
+                               "only system audio is being recorded. Your own voice "
+                               "may be missing from this transcript. Check that the "
+                               "right microphone is selected below.")
+                        self._emit({"type": "notice", "msg": msg})
+                        _notify_tray(msg)
+                        mic_warned = True
                 pcm16 = (frame * 32767).astype(np.int16).tobytes()
                 if self._wav is not None:
                     self._wav.writeframes(pcm16)   # record the whole session, not just speech

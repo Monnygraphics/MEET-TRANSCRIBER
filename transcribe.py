@@ -138,6 +138,7 @@ class AudioCapture:
         self.out_q = queue.Queue()
         self._streams = []
         self._stop = threading.Event()
+        self.last_loop_ts = self.last_mic_ts = time.time()
 
         wasapi = self.pa.get_host_api_info_by_type(pyaudio.paWASAPI)
         self.loop_dev = None
@@ -219,19 +220,25 @@ class AudioCapture:
         mic_buf = np.zeros(0, dtype=np.float32)
         carry = np.zeros(0, dtype=np.float32)
         last_loop = last_mic = time.time()
+        # Public (not just local) so callers -- e.g. app.py's recording loop --
+        # can tell a sustained one-sided silence from a brief stall and warn
+        # the user that the *other* source has gone quiet, instead of the
+        # recording just quietly degrading to one side with no sign of it.
+        self.last_loop_ts = last_loop
+        self.last_mic_ts = last_mic
         STALL_S = 1.0
         while not self._stop.is_set():
             drained = False
             while not self._loop_q.empty():
                 loop_buf = np.concatenate(
                     [loop_buf, to_mono_16k(self._loop_q.get(), *self._loop_fmt)])
-                last_loop = time.time()
+                last_loop = self.last_loop_ts = time.time()
                 drained = True
             if self.use_mic:
                 while not self._mic_q.empty():
                     mic_buf = np.concatenate(
                         [mic_buf, to_mono_16k(self._mic_q.get(), *self._mic_fmt)])
-                    last_mic = time.time()
+                    last_mic = self.last_mic_ts = time.time()
                     drained = True
             if not drained:
                 time.sleep(0.02)
