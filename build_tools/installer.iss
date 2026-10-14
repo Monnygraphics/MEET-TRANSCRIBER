@@ -3,7 +3,7 @@
 ;     iscc build_tools\installer.iss
 
 #define MyAppName "Local Meet Transcriber"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.0.1"
 #define MyAppPublisher "MonnyCreaX"
 #define MyAppExe "MeetTranscriber.exe"
 
